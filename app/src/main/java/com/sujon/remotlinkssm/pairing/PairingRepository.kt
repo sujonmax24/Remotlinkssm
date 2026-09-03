@@ -44,11 +44,7 @@ class PairingRepository(
     suspend fun revoke(deviceId: String) = dao.revoke(deviceId)
 
     suspend fun markConnected(deviceId: String) {
-        val devices = dao.observeAll()
-        // Actual transport will update this atomically in the connection repository.
-        // This method is intentionally not used until signaling/WebRTC is available.
-        @Suppress("UNUSED_VARIABLE")
-        val ignored = devices
+        dao.markConnected(deviceId, System.currentTimeMillis())
     }
 
     private fun localDeviceId(): String =
