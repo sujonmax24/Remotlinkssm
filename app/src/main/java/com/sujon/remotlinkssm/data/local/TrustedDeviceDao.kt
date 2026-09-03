@@ -20,4 +20,7 @@ interface TrustedDeviceDao {
 
     @Query("DELETE FROM trusted_devices WHERE deviceId = :deviceId")
     suspend fun revoke(deviceId: String)
+
+    @Query("UPDATE trusted_devices SET lastConnectedAt = :timestamp WHERE deviceId = :deviceId")
+    suspend fun markConnected(deviceId: String, timestamp: Long)
 }
