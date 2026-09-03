@@ -16,15 +16,36 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.sujon.remotlinkssm.RemoteLinkApplication
+import com.sujon.remotlinkssm.data.local.TrustedDeviceEntity
 import com.sujon.remotlinkssm.domain.model.DeviceRole
+import com.sujon.remotlinkssm.pairing.CameraPairingScreen
+import com.sujon.remotlinkssm.pairing.ControllerPairingScreen
+import com.sujon.remotlinkssm.pairing.PairingRepository
+import com.sujon.remotlinkssm.pairing.TrustedDevicesScreen
+
+private enum class PairingRoute { NONE, CAMERA_QR, CONTROLLER_SCAN }
 
 @Composable
 fun AppRoot() {
+    val context = LocalContext.current
+    val database = (context.applicationContext as RemoteLinkApplication).database
+    val repository = remember { PairingRepository(context.applicationContext, database.trustedDeviceDao()) }
+    val trustedDevices by repository.observeTrustedDevices().collectAsState(initial = emptyList())
+
     var role by remember { mutableStateOf<DeviceRole?>(null) }
+    var pairingRoute by remember { mutableStateOf(PairingRoute.NONE) }
     var permissionMessage by remember { mutableStateOf<String?>(null) }
+    var statusMessage by remember { mutableStateOf<String?>(null) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -39,8 +60,8 @@ fun AppRoot() {
         }
     }
 
-    if (role == null) {
-        RoleSelectionScreen(
+    when {
+        role == null -> RoleSelectionScreen(
             onController = { role = DeviceRole.CONTROLLER },
             onCamera = {
                 permissionLauncher.launch(
@@ -53,8 +74,75 @@ fun AppRoot() {
             },
             permissionMessage = permissionMessage
         )
-    } else {
-        DeviceHomeScreen(role = role!!, onBack = { role = null })
+
+        pairingRoute == PairingRoute.CAMERA_QR -> CameraPairingScreen(
+            repository = repository,
+            onBack = { pairingRoute = PairingRoute.NONE }
+        )
+
+        pairingRoute == PairingRoute.CONTROLLER_SCAN -> ControllerPairingScreen(
+            repository = repository,
+            onBack = { pairingRoute = PairingRoute.NONE },
+            onPaired = {
+                pairingRoute = PairingRoute.NONE
+                statusMessage = "Device trusted. It will remain in Trusted devices until you revoke it."
+            }
+        )
+
+        role == DeviceRole.CONTROLLER -> {
+            Column(Modifier.fillMaxSize()) {
+                TrustedDevicesScreen(
+                    devices = trustedDevices,
+                    onPair = { pairingRoute = PairingRoute.CONTROLLER_SCAN },
+                    onRevoke = { device ->
+                        statusMessage = "${device.deviceName} revoked."
+                        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                            repository.revoke(device.deviceId)
+                        }
+                    },
+                    onConnect = { device ->
+                        statusMessage = "${device.deviceName} is trusted. Live connection will be enabled with the WebRTC phase."
+                    }
+                )
+                StatusMessage(statusMessage)
+                OutlinedButton(
+                    onClick = { role = null; statusMessage = null },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)
+                ) { Text("Change Role") }
+            }
+        }
+
+        else -> {
+            Column(Modifier.fillMaxSize().padding(20.dp)) {
+                Text("Camera Device", style = MaterialTheme.typography.headlineMedium)
+                Spacer(Modifier.height(10.dp))
+                Text("This phone can create a secure first-time pairing QR. The controller must also enter the displayed 6-digit code.")
+                Spacer(Modifier.height(24.dp))
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(18.dp)) {
+                        Text("Pair a Controller", style = MaterialTheme.typography.titleLarge)
+                        Spacer(Modifier.height(8.dp))
+                        Text("Show a QR code and one-time 6-digit verification code to the other phone.")
+                        Spacer(Modifier.height(14.dp))
+                        Button(onClick = { pairingRoute = PairingRoute.CAMERA_QR }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Show Pairing QR")
+                        }
+                    }
+                }
+                Spacer(Modifier.weight(1f))
+                OutlinedButton(
+                    onClick = { role = null },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Change Role") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StatusMessage(message: String?) {
+    message?.let {
+        Text(it, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
     }
 }
 
@@ -70,61 +158,30 @@ private fun RoleSelectionScreen(
     ) {
         Text("RemoteLink", style = MaterialTheme.typography.headlineLarge)
         Spacer(Modifier.height(8.dp))
-        Text(
-            "একটি ফোনকে অন্য ফোনের camera, audio ও screen-এর সাথে নিরাপদভাবে যুক্ত করুন।",
-            style = MaterialTheme.typography.bodyLarge
-        )
+        Text("Securely pair two phones so a trusted Controller can later connect to a Camera Device.")
         Spacer(Modifier.height(28.dp))
-
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(20.dp)) {
                 Text("Controller", style = MaterialTheme.typography.titleLarge)
                 Spacer(Modifier.height(6.dp))
-                Text("অন্য ফোনের live view, photo, video, camera switch, flash ও zoom control করুন।")
+                Text("Scan the Camera Device QR and verify its 6-digit pairing code.")
                 Spacer(Modifier.height(14.dp))
-                Button(onClick = onController, modifier = Modifier.fillMaxWidth()) {
-                    Text("Use as Controller")
-                }
+                Button(onClick = onController, modifier = Modifier.fillMaxWidth()) { Text("Use as Controller") }
             }
         }
-
         Spacer(Modifier.height(16.dp))
-
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(20.dp)) {
                 Text("Camera Device", style = MaterialTheme.typography.titleLarge)
                 Spacer(Modifier.height(6.dp))
-                Text("এই ফোনের camera ও microphone অন্য trusted phone-কে share করার জন্য প্রস্তুত করুন।")
+                Text("Create a QR + 6-digit pairing session for a Controller phone.")
                 Spacer(Modifier.height(14.dp))
-                OutlinedButton(onClick = onCamera, modifier = Modifier.fillMaxWidth()) {
-                    Text("Use as Camera Device")
-                }
+                OutlinedButton(onClick = onCamera, modifier = Modifier.fillMaxWidth()) { Text("Use as Camera Device") }
             }
         }
-
         permissionMessage?.let {
             Spacer(Modifier.height(16.dp))
             Text(it, color = MaterialTheme.colorScheme.error)
-        }
-    }
-}
-
-@Composable
-private fun DeviceHomeScreen(role: DeviceRole, onBack: () -> Unit) {
-    Column(Modifier.fillMaxSize().padding(24.dp)) {
-        Text(
-            if (role == DeviceRole.CONTROLLER) "Controller Dashboard" else "Camera Device",
-            style = MaterialTheme.typography.headlineMedium
-        )
-        Spacer(Modifier.height(12.dp))
-        Text("Phase 1 foundation is ready. Pairing, WebRTC media and screen control are coming in the next phases.")
-        Spacer(Modifier.height(24.dp))
-        Text("Trusted devices", style = MaterialTheme.typography.titleLarge)
-        Spacer(Modifier.height(8.dp))
-        Text("No trusted devices yet. QR + 6-digit secure pairing will be added next.")
-        Spacer(Modifier.weight(1f))
-        OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) {
-            Text("Change Role")
         }
     }
 }
