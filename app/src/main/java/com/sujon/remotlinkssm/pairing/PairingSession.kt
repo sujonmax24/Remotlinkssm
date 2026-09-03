@@ -7,8 +7,9 @@ import java.security.SecureRandom
 
 private const val CODE_LENGTH = 6
 private const val CODE_ALPHABET = "0123456789"
+private const val SESSION_TTL_MS = 5 * 60 * 1000L
 
-/** QR payload used only for first-time device pairing. */
+/** QR payload used only for first-time pairing bootstrap. */
 data class PairingSession(
     val sessionId: String,
     val deviceId: String,
@@ -33,13 +34,16 @@ data class PairingSession(
             val json = JSONObject(payload)
             require(json.optString("type") == "remotelink_pair") { "Invalid RemoteLink QR code" }
             require(json.optInt("v") == 1) { "Unsupported pairing version" }
+            val createdAt = json.getLong("createdAt")
+            val age = System.currentTimeMillis() - createdAt
+            require(age in 0..SESSION_TTL_MS) { "Pairing QR has expired. Generate a new QR code." }
             return PairingSession(
                 sessionId = json.getString("sessionId"),
                 deviceId = json.getString("deviceId"),
                 deviceName = json.getString("deviceName"),
                 publicKey = json.getString("publicKey"),
                 codeHash = json.getString("codeHash"),
-                createdAt = json.getLong("createdAt")
+                createdAt = createdAt
             )
         }
     }
