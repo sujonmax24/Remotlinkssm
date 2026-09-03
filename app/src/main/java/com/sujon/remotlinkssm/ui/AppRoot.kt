@@ -21,17 +21,19 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.sujon.remotlinkssm.RemoteLinkApplication
-import com.sujon.remotlinkssm.data.local.TrustedDeviceEntity
 import com.sujon.remotlinkssm.domain.model.DeviceRole
 import com.sujon.remotlinkssm.pairing.CameraPairingScreen
 import com.sujon.remotlinkssm.pairing.ControllerPairingScreen
 import com.sujon.remotlinkssm.pairing.PairingRepository
 import com.sujon.remotlinkssm.pairing.TrustedDevicesScreen
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 private enum class PairingRoute { NONE, CAMERA_QR, CONTROLLER_SCAN }
 
@@ -41,13 +43,14 @@ fun AppRoot() {
     val database = (context.applicationContext as RemoteLinkApplication).database
     val repository = remember { PairingRepository(context.applicationContext, database.trustedDeviceDao()) }
     val trustedDevices by repository.observeTrustedDevices().collectAsState(initial = emptyList())
+    val scope = rememberCoroutineScope()
 
     var role by remember { mutableStateOf<DeviceRole?>(null) }
     var pairingRoute by remember { mutableStateOf(PairingRoute.NONE) }
     var permissionMessage by remember { mutableStateOf<String?>(null) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
 
-    val permissionLauncher = rememberLauncherForActivityResult(
+    val cameraRolePermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
         val cameraOk = results[Manifest.permission.CAMERA] == true
@@ -60,11 +63,25 @@ fun AppRoot() {
         }
     }
 
+    val controllerCameraPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            role = DeviceRole.CONTROLLER
+            pairingRoute = PairingRoute.CONTROLLER_SCAN
+            permissionMessage = null
+        } else {
+            permissionMessage = "QR scan করার জন্য Controller-কে Camera permission দিতে হবে।"
+        }
+    }
+
     when {
         role == null -> RoleSelectionScreen(
-            onController = { role = DeviceRole.CONTROLLER },
+            onController = {
+                controllerCameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+            },
             onCamera = {
-                permissionLauncher.launch(
+                cameraRolePermissionLauncher.launch(
                     buildList {
                         add(Manifest.permission.CAMERA)
                         add(Manifest.permission.RECORD_AUDIO)
@@ -95,13 +112,12 @@ fun AppRoot() {
                     devices = trustedDevices,
                     onPair = { pairingRoute = PairingRoute.CONTROLLER_SCAN },
                     onRevoke = { device ->
+                        scope.launch(Dispatchers.IO) { repository.revoke(device.deviceId) }
                         statusMessage = "${device.deviceName} revoked."
-                        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-                            repository.revoke(device.deviceId)
-                        }
                     },
                     onConnect = { device ->
-                        statusMessage = "${device.deviceName} is trusted. Live connection will be enabled with the WebRTC phase."
+                        scope.launch(Dispatchers.IO) { repository.markConnected(device.deviceId) }
+                        statusMessage = "${device.deviceName} is trusted. Live connection will be enabled in the WebRTC phase."
                     }
                 )
                 StatusMessage(statusMessage)
@@ -116,13 +132,13 @@ fun AppRoot() {
             Column(Modifier.fillMaxSize().padding(20.dp)) {
                 Text("Camera Device", style = MaterialTheme.typography.headlineMedium)
                 Spacer(Modifier.height(10.dp))
-                Text("This phone can create a secure first-time pairing QR. The controller must also enter the displayed 6-digit code.")
+                Text("Create a secure first-time pairing QR. The Controller must scan it and enter the 6-digit code shown here.")
                 Spacer(Modifier.height(24.dp))
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(18.dp)) {
                         Text("Pair a Controller", style = MaterialTheme.typography.titleLarge)
                         Spacer(Modifier.height(8.dp))
-                        Text("Show a QR code and one-time 6-digit verification code to the other phone.")
+                        Text("The QR identifies this device. The separate 6-digit code prevents someone from pairing from a QR alone.")
                         Spacer(Modifier.height(14.dp))
                         Button(onClick = { pairingRoute = PairingRoute.CAMERA_QR }, modifier = Modifier.fillMaxWidth()) {
                             Text("Show Pairing QR")
@@ -130,10 +146,9 @@ fun AppRoot() {
                     }
                 }
                 Spacer(Modifier.weight(1f))
-                OutlinedButton(
-                    onClick = { role = null },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("Change Role") }
+                OutlinedButton(onClick = { role = null }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Change Role")
+                }
             }
         }
     }
@@ -141,9 +156,7 @@ fun AppRoot() {
 
 @Composable
 private fun StatusMessage(message: String?) {
-    message?.let {
-        Text(it, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
-    }
+    message?.let { Text(it, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) }
 }
 
 @Composable
@@ -152,10 +165,7 @@ private fun RoleSelectionScreen(
     onCamera: () -> Unit,
     permissionMessage: String?
 ) {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
-        verticalArrangement = Arrangement.Center
-    ) {
+    Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center) {
         Text("RemoteLink", style = MaterialTheme.typography.headlineLarge)
         Spacer(Modifier.height(8.dp))
         Text("Securely pair two phones so a trusted Controller can later connect to a Camera Device.")
