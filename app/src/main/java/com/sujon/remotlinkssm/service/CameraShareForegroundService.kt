@@ -11,12 +11,8 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.sujon.remotlinkssm.MainActivity
-import com.sujon.remotlinkssm.R
 
-/**
- * Keeps camera/microphone sharing user-visible while the Camera Device is sharing.
- * It is started only from a visible, user-approved sharing action.
- */
+/** Keeps camera/microphone sharing user-visible while the Camera Device is sharing. */
 class CameraShareForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
@@ -43,34 +39,29 @@ class CameraShareForegroundService : Service() {
 
     private fun buildNotification(): Notification {
         val stopIntent = PendingIntent.getService(
-            this,
-            2,
+            this, 2,
             Intent(this, CameraShareForegroundService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val openIntent = PendingIntent.getActivity(
-            this,
-            1,
-            Intent(this, MainActivity::class.java),
+            this, 1, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(android.R.drawable.ic_menu_camera)
             .setContentTitle("RemoteLink is sharing")
             .setContentText("Camera and microphone are being shared with a trusted device.")
             .setContentIntent(openIntent)
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .addAction(0, "Stop sharing", stopIntent)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop sharing", stopIntent)
             .build()
     }
 
     private fun createChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
-                CHANNEL_ID,
-                "Camera sharing",
-                NotificationManager.IMPORTANCE_LOW
+                CHANNEL_ID, "Camera sharing", NotificationManager.IMPORTANCE_LOW
             ).apply { description = "Visible status while RemoteLink shares camera and microphone." }
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
