@@ -64,22 +64,16 @@ class WebRtcSessionManager(
                 session.createOffer()
             }
         }
-
         override fun onMessage(message: SignalingMessage) {
             if (message.type == SignalingMessage.Type.HELLO && role == DeviceRole.CAMERA) {
-                handleIncomingHello(message)
-                return
+                handleIncomingHello(message); return
             }
             val expectedDeviceId = remoteDeviceId ?: return
             if (message.senderDeviceId != expectedDeviceId || message.sessionId != sessionId) return
             val publicKey = remotePublicKey ?: return
-            if (!signed.verify(message, publicKey)) {
-                listener.onError("Rejected unauthenticated signaling message")
-                return
-            }
+            if (!signed.verify(message, publicKey)) { listener.onError("Rejected unauthenticated signaling message"); return }
             handleMessage(message)
         }
-
         override fun onFailure(t: Throwable) = listener.onError(t.message ?: "Signaling connection failed")
         override fun onClosed() { if (!ended) listener.onEnded() }
     })
@@ -105,23 +99,16 @@ class WebRtcSessionManager(
         if (signalingEndpoint.isBlank()) return listener.onError("Configure a wss:// signaling endpoint before connecting")
         if (!signalingEndpoint.startsWith("wss://")) return listener.onError("Signaling endpoint must use wss://")
         if (role == DeviceRole.CONTROLLER && remoteDeviceId == null) return listener.onError("No Camera Device is selected")
-        listener.onConnecting()
-        signaling.connect()
+        listener.onConnecting(); signaling.connect()
     }
 
-    /** Camera-side approval. Camera/mic capture is not started before this method is called. */
+    /** Camera-side approval. Capture starts only after the user presses Accept. */
     fun acceptCameraShare() {
         if (role != DeviceRole.CAMERA || accepted) return
         if (remoteDeviceId == null || remotePublicKey == null) return listener.onError("No authenticated Controller request is pending")
         accepted = true
         sendHello()
-        val offer = pendingOffer ?: return
-        startSharingService()
-        session.addLocalMedia(context)
-        session.setRemoteDescription(SessionDescription.Type.OFFER, offer)
-        remoteDescriptionSet = true
-        flushPendingIce()
-        session.createAnswer()
+        answerPendingOfferIfReady()
     }
 
     fun rejectOrEnd() {
@@ -129,7 +116,6 @@ class WebRtcSessionManager(
         if (remoteDeviceId != null) send(SignalingMessage.Type.REJECT, "{\"reason\":\"user_rejected\"}")
         closeInternal()
     }
-
     fun end() {
         if (ended) return
         if (remoteDeviceId != null) send(SignalingMessage.Type.END, "{}")
@@ -139,50 +125,49 @@ class WebRtcSessionManager(
     private fun handleIncomingHello(message: SignalingMessage) {
         if (invitationToken.isNullOrBlank()) return
         val payload = runCatching { JSONObject(message.payload) }.getOrNull() ?: return
-        if (payload.optString("token") != invitationToken) {
-            listener.onError("Rejected connection request: invitation token mismatch")
-            return
-        }
+        if (payload.optString("token") != invitationToken) return listener.onError("Rejected connection request: invitation token mismatch")
         val publicKey = payload.optString("publicKey")
         val deviceName = payload.optString("deviceName").ifBlank { "Controller" }
         if (publicKey.isBlank()) return listener.onError("Rejected connection request: missing Controller identity")
         if (!signed.verify(message, publicKey)) return listener.onError("Rejected connection request: invalid Controller signature")
-        remoteDeviceId = message.senderDeviceId
-        remotePublicKey = publicKey
-        sessionId = message.sessionId
+        remoteDeviceId = message.senderDeviceId; remotePublicKey = publicKey; sessionId = message.sessionId
         listener.onIncomingRequest(message.senderDeviceId, deviceName, publicKey)
-        if (!approvalRequested) {
-            approvalRequested = true
-            listener.onApprovalRequired()
-        }
+        if (!approvalRequested) { approvalRequested = true; listener.onApprovalRequired() }
     }
 
     private fun handleMessage(message: SignalingMessage) {
         when (message.type) {
             SignalingMessage.Type.HELLO -> Unit
             SignalingMessage.Type.OFFER -> {
-                if (role != DeviceRole.CAMERA || accepted) return
+                if (role != DeviceRole.CAMERA) return
                 pendingOffer = JSONObject(message.payload).getString("sdp")
                 listener.onApprovalRequired()
+                if (accepted) answerPendingOfferIfReady()
             }
             SignalingMessage.Type.ANSWER -> {
                 if (role != DeviceRole.CONTROLLER) return
                 session.setRemoteDescription(SessionDescription.Type.ANSWER, JSONObject(message.payload).getString("sdp"))
-                remoteDescriptionSet = true
-                flushPendingIce()
+                remoteDescriptionSet = true; flushPendingIce()
             }
             SignalingMessage.Type.ICE -> if (!remoteDescriptionSet) pendingIce += message else applyIce(message)
             SignalingMessage.Type.REJECT, SignalingMessage.Type.END -> closeInternal()
         }
     }
 
+    private fun answerPendingOfferIfReady() {
+        val offer = pendingOffer ?: return
+        startSharingService()
+        session.addLocalMedia(context)
+        session.setRemoteDescription(SessionDescription.Type.OFFER, offer)
+        remoteDescriptionSet = true
+        pendingOffer = null
+        flushPendingIce()
+        session.createAnswer()
+    }
+
     private fun sendHello() {
         val target = remoteDeviceId ?: return
-        val payload = JSONObject()
-            .put("token", invitationToken ?: "")
-            .put("deviceName", localDeviceName())
-            .put("publicKey", keyManager.publicKeyBase64())
-            .toString()
+        val payload = JSONObject().put("token", invitationToken ?: "").put("deviceName", localDeviceName()).put("publicKey", keyManager.publicKeyBase64()).toString()
         val message = signed.create(SignalingMessage.Type.HELLO, sessionId, target, payload)
         if (!signaling.send(message)) listener.onError("Unable to send HELLO signaling message")
     }
@@ -191,31 +176,20 @@ class WebRtcSessionManager(
         val json = JSONObject(message.payload)
         session.addRemoteIceCandidate(if (json.isNull("sdpMid")) null else json.getString("sdpMid"), json.getInt("sdpMLineIndex"), json.getString("candidate"))
     }
-
-    private fun flushPendingIce() {
-        pendingIce.toList().forEach(::applyIce)
-        pendingIce.clear()
-    }
-
+    private fun flushPendingIce() { pendingIce.toList().forEach(::applyIce); pendingIce.clear() }
     private fun send(type: SignalingMessage.Type, payload: String) {
         val target = remoteDeviceId ?: return
         val message = signed.create(type, sessionId, target, payload)
         if (!signaling.send(message)) listener.onError("Unable to send ${type.name} signaling message")
     }
-
     private fun startSharingService() {
         val intent = Intent(appContext, CameraShareForegroundService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) appContext.startForegroundService(intent) else appContext.startService(intent)
     }
     private fun stopSharingService() = appContext.stopService(Intent(appContext, CameraShareForegroundService::class.java))
     private fun localDeviceName() = listOf(Build.MANUFACTURER, Build.MODEL).joinToString(" ") { it.trim() }.trim().ifBlank { "Android Device" }
-
     private fun closeInternal() {
         if (ended) return
-        ended = true
-        stopSharingService()
-        signaling.close()
-        session.close()
-        listener.onEnded()
+        ended = true; stopSharingService(); signaling.close(); session.close(); listener.onEnded()
     }
 }
