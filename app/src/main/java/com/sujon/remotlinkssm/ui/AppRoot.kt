@@ -148,7 +148,7 @@ fun AppRoot() {
                         statusMessage = "${device.deviceName} revoked."
                     },
                     onConnect = { device ->
-                        scope.launch(Dispatchers.IO { repository.markConnected(device.deviceId) })
+                        scope.launch(Dispatchers.IO) { repository.markConnected(device.deviceId) }
                         statusMessage = if (signalingConfig.endpoint.isBlank()) {
                             "Set a wss:// signaling endpoint before connecting."
                         } else {
