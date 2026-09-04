@@ -22,25 +22,20 @@ class PairingRepository(
         publicKey = keyManager.publicKeyBase64()
     )
 
-    fun newSession(): Pair<PairingSession, String> {
-        val code = PairingCode.generate()
-        val session = PairingSession(
-            sessionId = UUID.randomUUID().toString(),
-            deviceId = localDeviceId(),
-            deviceName = localDeviceName(),
-            publicKey = keyManager.publicKeyBase64(),
-            codeHash = PairingCode.sha256(code),
-            createdAt = System.currentTimeMillis()
-        )
-        return session to code
-    }
+    fun newPairingLink(signalingEndpoint: String): PairingLink = PairingLink.create(
+        deviceId = localDeviceId(),
+        deviceName = localDeviceName(),
+        publicKey = keyManager.publicKeyBase64(),
+        signalingEndpoint = signalingEndpoint
+    )
 
-    suspend fun trust(session: PairingSession) {
+    suspend fun trustLink(link: PairingLink) {
+        require(link.deviceId != localDeviceId()) { "Cannot trust this device itself" }
         dao.upsert(
             TrustedDeviceEntity(
-                deviceId = session.deviceId,
-                deviceName = session.deviceName,
-                publicKey = session.publicKey,
+                deviceId = link.deviceId,
+                deviceName = link.deviceName,
+                publicKey = link.publicKey,
                 pairedAt = System.currentTimeMillis(),
                 lastConnectedAt = null
             )
