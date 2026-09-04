@@ -1,7 +1,6 @@
 package com.sujon.remotlinkssm.webrtc
 
 import android.content.Context
-import android.os.Build
 import android.provider.Settings
 import com.sujon.remotlinkssm.data.local.TrustedDeviceEntity
 import com.sujon.remotlinkssm.domain.model.DeviceRole
@@ -11,23 +10,14 @@ import com.sujon.remotlinkssm.signaling.SignalingConfig
 import com.sujon.remotlinkssm.signaling.SignalingListener
 import com.sujon.remotlinkssm.signaling.SignalingMessage
 import com.sujon.remotlinkssm.signaling.SignedSignaling
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
+import org.json.JSONObject
 import org.webrtc.EglBase
 import org.webrtc.PeerConnection
 import org.webrtc.SessionDescription
 import org.webrtc.VideoTrack
 import java.util.UUID
 
-/**
- * Coordinates authenticated signaling and a single WebRTC session.
- *
- * Controller: connect -> HELLO -> OFFER -> ICE.
- * Camera: connect -> HELLO -> wait for user approval -> ANSWER -> ICE.
- * The signaling server never receives audio/video; it only relays signed
- * SDP/ICE envelopes.
- */
+/** Coordinates authenticated signaling and one WebRTC session. */
 class WebRtcSessionManager(
     private val context: Context,
     private val role: DeviceRole,
@@ -46,34 +36,36 @@ class WebRtcSessionManager(
         fun onEnded()
     }
 
-    private val localDeviceId: String = Settings.Secure.getString(
-        context.contentResolver,
-        Settings.Secure.ANDROID_ID
+    private val localDeviceId = Settings.Secure.getString(
+        context.contentResolver, Settings.Secure.ANDROID_ID
     )?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
-
     private val keyManager = DeviceKeyManager()
     private val signed = SignedSignaling(localDeviceId, keyManager)
-    private val sessionId = UUID.randomUUID().toString()
-    private val pendingIce = mutableListOf<SignalingMessage>()
+    private var sessionId = UUID.randomUUID().toString()
     private var remoteDescriptionSet = false
     private var accepted = false
     private var ended = false
+    private var pendingOffer: String? = null
+    private val pendingIce = mutableListOf<SignalingMessage>()
 
     private val signaling = SignalingClient(signalingEndpoint, object : SignalingListener {
         override fun onConnected() {
             listener.onConnected()
-            send(SignalingMessage.Type.HELLO, "{}")
-            if (role == DeviceRole.CONTROLLER) {
-                session.createOffer()
-            }
+            send(SignalingMessage.Type.HELLO, "{}", sessionId)
+            if (role == DeviceRole.CONTROLLER) session.createOffer()
         }
 
         override fun onMessage(message: SignalingMessage) {
             if (message.senderDeviceId != trustedDevice.deviceId) return
-            if (message.sessionId != sessionId) return
+            // HELLO is bootstrap registration and can carry the sender's own session ID.
+            if (message.type != SignalingMessage.Type.HELLO && message.sessionId != sessionId) return
             if (!signed.verify(message, trustedDevice.publicKey)) {
                 listener.onError("Rejected unauthenticated signaling message")
                 return
+            }
+            if (message.type == SignalingMessage.Type.OFFER && role == DeviceRole.CAMERA) {
+                // The controller's offer establishes the shared WebRTC session ID.
+                sessionId = message.sessionId
             }
             handleMessage(message)
         }
@@ -102,9 +94,7 @@ class WebRtcSessionManager(
         }
 
         override fun onRemoteVideoTrack(track: VideoTrack) = listener.onRemoteVideoTrack(track)
-
         override fun onConnectionState(state: PeerConnection.PeerConnectionState) = listener.onConnectionState(state)
-
         override fun onError(message: String) = listener.onError(message)
     })
 
@@ -121,14 +111,14 @@ class WebRtcSessionManager(
         signaling.connect()
     }
 
-    /** Camera-side explicit approval. Media capture starts only after this call. */
+    /** Camera-side explicit approval. Capture begins only after user approval. */
     fun acceptCameraShare() {
         if (role != DeviceRole.CAMERA || accepted) return
-        accepted = true
         val offer = pendingOffer ?: run {
             listener.onError("No pending offer")
             return
         }
+        accepted = true
         session.addLocalMedia(context)
         session.setRemoteDescription(SessionDescription.Type.OFFER, offer)
         remoteDescriptionSet = true
@@ -136,7 +126,6 @@ class WebRtcSessionManager(
         session.createAnswer()
     }
 
-    /** Camera-side explicit rejection, or a local stop action. */
     fun rejectOrEnd() {
         if (ended) return
         send(SignalingMessage.Type.REJECT, "{\"reason\":\"user_rejected\"}")
@@ -149,36 +138,30 @@ class WebRtcSessionManager(
         closeInternal()
     }
 
-    private var pendingOffer: String? = null
-
     private fun handleMessage(message: SignalingMessage) {
         when (message.type) {
             SignalingMessage.Type.HELLO -> Unit
             SignalingMessage.Type.OFFER -> {
                 if (role != DeviceRole.CAMERA || accepted) return
-                pendingOffer = org.json.JSONObject(message.payload).getString("sdp")
+                pendingOffer = JSONObject(message.payload).getString("sdp")
                 listener.onApprovalRequired()
             }
             SignalingMessage.Type.ANSWER -> {
                 if (role != DeviceRole.CONTROLLER) return
-                val sdp = org.json.JSONObject(message.payload).getString("sdp")
+                val sdp = JSONObject(message.payload).getString("sdp")
                 session.setRemoteDescription(SessionDescription.Type.ANSWER, sdp)
                 remoteDescriptionSet = true
                 flushPendingIce()
             }
             SignalingMessage.Type.ICE -> {
-                if (!remoteDescriptionSet) {
-                    pendingIce += message
-                    return
-                }
-                applyIce(message)
+                if (!remoteDescriptionSet) pendingIce += message else applyIce(message)
             }
             SignalingMessage.Type.REJECT, SignalingMessage.Type.END -> closeInternal()
         }
     }
 
     private fun applyIce(message: SignalingMessage) {
-        val json = org.json.JSONObject(message.payload)
+        val json = JSONObject(message.payload)
         session.addRemoteIceCandidate(
             if (json.isNull("sdpMid")) null else json.getString("sdpMid"),
             json.getInt("sdpMLineIndex"),
@@ -191,8 +174,8 @@ class WebRtcSessionManager(
         pendingIce.clear()
     }
 
-    private fun send(type: SignalingMessage.Type, payload: String) {
-        val message = signed.create(type, sessionId, trustedDevice.deviceId, payload)
+    private fun send(type: SignalingMessage.Type, payload: String, targetSessionId: String = sessionId) {
+        val message = signed.create(type, targetSessionId, trustedDevice.deviceId, payload)
         if (!signaling.send(message)) listener.onError("Unable to send ${type.name} signaling message")
     }
 
