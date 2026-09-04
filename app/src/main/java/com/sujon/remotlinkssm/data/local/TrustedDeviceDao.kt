@@ -12,6 +12,9 @@ interface TrustedDeviceDao {
     @Query("SELECT * FROM trusted_devices ORDER BY lastConnectedAt DESC, pairedAt DESC")
     fun observeAll(): Flow<List<TrustedDeviceEntity>>
 
+    @Query("SELECT * FROM trusted_devices WHERE deviceId = :deviceId LIMIT 1")
+    suspend fun findById(deviceId: String): TrustedDeviceEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(device: TrustedDeviceEntity)
 
