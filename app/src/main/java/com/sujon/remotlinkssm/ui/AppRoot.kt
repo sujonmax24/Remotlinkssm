@@ -15,6 +15,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -28,14 +29,17 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.sujon.remotlinkssm.RemoteLinkApplication
 import com.sujon.remotlinkssm.domain.model.DeviceRole
+import com.sujon.remotlinkssm.pairing.CameraControllerIdentityScanScreen
 import com.sujon.remotlinkssm.pairing.CameraPairingScreen
+import com.sujon.remotlinkssm.pairing.ControllerIdentityQrScreen
 import com.sujon.remotlinkssm.pairing.ControllerPairingScreen
 import com.sujon.remotlinkssm.pairing.PairingRepository
 import com.sujon.remotlinkssm.pairing.TrustedDevicesScreen
+import com.sujon.remotlinkssm.signaling.SignalingConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
-private enum class PairingRoute { NONE, CAMERA_QR, CONTROLLER_SCAN }
+private enum class PairingRoute { NONE, CAMERA_QR, CONTROLLER_SCAN, CONTROLLER_IDENTITY_QR, CAMERA_SCAN_CONTROLLER }
 
 @Composable
 fun AppRoot() {
@@ -43,12 +47,14 @@ fun AppRoot() {
     val database = (context.applicationContext as RemoteLinkApplication).database
     val repository = remember { PairingRepository(context.applicationContext, database.trustedDeviceDao()) }
     val trustedDevices by repository.observeTrustedDevices().collectAsState(initial = emptyList())
+    val signalingConfig = remember { SignalingConfig(context.applicationContext) }
     val scope = rememberCoroutineScope()
 
     var role by remember { mutableStateOf<DeviceRole?>(null) }
     var pairingRoute by remember { mutableStateOf(PairingRoute.NONE) }
     var permissionMessage by remember { mutableStateOf<String?>(null) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
+    var endpoint by remember { mutableStateOf(signalingConfig.endpoint) }
 
     val cameraRolePermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -77,9 +83,7 @@ fun AppRoot() {
 
     when {
         role == null -> RoleSelectionScreen(
-            onController = {
-                controllerCameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-            },
+            onController = { controllerCameraPermissionLauncher.launch(Manifest.permission.CAMERA) },
             onCamera = {
                 cameraRolePermissionLauncher.launch(
                     buildList {
@@ -101,23 +105,55 @@ fun AppRoot() {
             repository = repository,
             onBack = { pairingRoute = PairingRoute.NONE },
             onPaired = {
+                pairingRoute = PairingRoute.CONTROLLER_IDENTITY_QR
+                statusMessage = "Camera trusted. Now add this Controller identity on the Camera Device."
+            }
+        )
+
+        pairingRoute == PairingRoute.CONTROLLER_IDENTITY_QR -> ControllerIdentityQrScreen(
+            repository = repository,
+            onBack = { pairingRoute = PairingRoute.NONE }
+        )
+
+        pairingRoute == PairingRoute.CAMERA_SCAN_CONTROLLER -> CameraControllerIdentityScanScreen(
+            repository = repository,
+            onBack = { pairingRoute = PairingRoute.NONE },
+            onTrusted = {
                 pairingRoute = PairingRoute.NONE
-                statusMessage = "Device trusted. It will remain in Trusted devices until you revoke it."
+                statusMessage = "Controller trusted. Both devices now have each other's public identity."
             }
         )
 
         role == DeviceRole.CONTROLLER -> {
             Column(Modifier.fillMaxSize()) {
+                SignalingEndpointCard(
+                    endpoint = endpoint,
+                    onEndpointChange = { endpoint = it },
+                    onSave = {
+                        val value = endpoint.trim()
+                        if (value.startsWith("wss://")) {
+                            signalingConfig.endpoint = value
+                            statusMessage = "Signaling endpoint saved."
+                        } else {
+                            statusMessage = "Endpoint must start with wss://"
+                        }
+                    }
+                )
                 TrustedDevicesScreen(
                     devices = trustedDevices,
                     onPair = { pairingRoute = PairingRoute.CONTROLLER_SCAN },
+                    onIdentityQr = { pairingRoute = PairingRoute.CONTROLLER_IDENTITY_QR },
                     onRevoke = { device ->
                         scope.launch(Dispatchers.IO) { repository.revoke(device.deviceId) }
                         statusMessage = "${device.deviceName} revoked."
                     },
                     onConnect = { device ->
-                        scope.launch(Dispatchers.IO) { repository.markConnected(device.deviceId) }
-                        statusMessage = "${device.deviceName} is trusted. Live connection will be enabled in the WebRTC phase."
+                        scope.launch(Dispatchers.IO { repository.markConnected(device.deviceId) })
+                        statusMessage = if (signalingConfig.endpoint.isBlank()) {
+                            "Set a wss:// signaling endpoint before connecting."
+                        } else {
+                            "${device.deviceName} is trusted. WebRTC session wiring is next."
+                        }
                     }
                 )
                 StatusMessage(statusMessage)
@@ -132,24 +168,51 @@ fun AppRoot() {
             Column(Modifier.fillMaxSize().padding(20.dp)) {
                 Text("Camera Device", style = MaterialTheme.typography.headlineMedium)
                 Spacer(Modifier.height(10.dp))
-                Text("Create a secure first-time pairing QR. The Controller must scan it and enter the 6-digit code shown here.")
+                Text("Pair a Controller once. Later connections use the saved device identity, subject to Android permissions and your approval.")
                 Spacer(Modifier.height(24.dp))
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(18.dp)) {
                         Text("Pair a Controller", style = MaterialTheme.typography.titleLarge)
                         Spacer(Modifier.height(8.dp))
-                        Text("The QR identifies this device. The separate 6-digit code prevents someone from pairing from a QR alone.")
+                        Text("First, let the Controller scan this Camera QR + 6-digit code.")
                         Spacer(Modifier.height(14.dp))
                         Button(onClick = { pairingRoute = PairingRoute.CAMERA_QR }, modifier = Modifier.fillMaxWidth()) {
                             Text("Show Pairing QR")
                         }
                     }
                 }
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton(
+                    onClick = { pairingRoute = PairingRoute.CAMERA_SCAN_CONTROLLER },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Scan Controller QR") }
                 Spacer(Modifier.weight(1f))
+                StatusMessage(statusMessage)
                 OutlinedButton(onClick = { role = null }, modifier = Modifier.fillMaxWidth()) {
                     Text("Change Role")
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun SignalingEndpointCard(endpoint: String, onEndpointChange: (String) -> Unit, onSave: () -> Unit) {
+    Card(Modifier.fillMaxWidth().padding(20.dp, 12.dp, 20.dp, 4.dp)) {
+        Column(Modifier.padding(16.dp)) {
+            Text("Signaling server", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(6.dp))
+            Text("Required for SDP/ICE exchange. Use a TLS WebSocket endpoint; media does not pass through it.")
+            Spacer(Modifier.height(10.dp))
+            OutlinedTextField(
+                value = endpoint,
+                onValueChange = onEndpointChange,
+                label = { Text("wss://…") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(8.dp))
+            Button(onClick = onSave, modifier = Modifier.fillMaxWidth()) { Text("Save endpoint") }
         }
     }
 }
