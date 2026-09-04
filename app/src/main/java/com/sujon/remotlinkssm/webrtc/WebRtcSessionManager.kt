@@ -1,10 +1,13 @@
 package com.sujon.remotlinkssm.webrtc
 
 import android.content.Context
+import android.content.Intent
+import android.os.Build
 import android.provider.Settings
 import com.sujon.remotlinkssm.data.local.TrustedDeviceEntity
 import com.sujon.remotlinkssm.domain.model.DeviceRole
 import com.sujon.remotlinkssm.security.DeviceKeyManager
+import com.sujon.remotlinkssm.service.CameraShareForegroundService
 import com.sujon.remotlinkssm.signaling.SignalingClient
 import com.sujon.remotlinkssm.signaling.SignalingConfig
 import com.sujon.remotlinkssm.signaling.SignalingListener
@@ -36,6 +39,7 @@ class WebRtcSessionManager(
         fun onEnded()
     }
 
+    private val appContext = context.applicationContext
     private val localDeviceId = Settings.Secure.getString(
         context.contentResolver, Settings.Secure.ANDROID_ID
     )?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
@@ -64,7 +68,6 @@ class WebRtcSessionManager(
                 return
             }
             if (message.type == SignalingMessage.Type.OFFER && role == DeviceRole.CAMERA) {
-                // The controller's offer establishes the shared WebRTC session ID.
                 sessionId = message.sessionId
             }
             handleMessage(message)
@@ -119,6 +122,7 @@ class WebRtcSessionManager(
             return
         }
         accepted = true
+        startSharingService()
         session.addLocalMedia(context)
         session.setRemoteDescription(SessionDescription.Type.OFFER, offer)
         remoteDescriptionSet = true
@@ -179,9 +183,23 @@ class WebRtcSessionManager(
         if (!signaling.send(message)) listener.onError("Unable to send ${type.name} signaling message")
     }
 
+    private fun startSharingService() {
+        val intent = Intent(appContext, CameraShareForegroundService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            appContext.startForegroundService(intent)
+        } else {
+            appContext.startService(intent)
+        }
+    }
+
+    private fun stopSharingService() {
+        appContext.stopService(Intent(appContext, CameraShareForegroundService::class.java))
+    }
+
     private fun closeInternal() {
         if (ended) return
         ended = true
+        stopSharingService()
         signaling.close()
         session.close()
         listener.onEnded()
