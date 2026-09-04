@@ -8,21 +8,15 @@ import org.webrtc.Camera2Enumerator
 import org.webrtc.CameraVideoCapturer
 import org.webrtc.EglBase
 import org.webrtc.MediaConstraints
+import org.webrtc.MediaStreamTrack
 import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
 import org.webrtc.SessionDescription
 import org.webrtc.SurfaceTextureHelper
 import org.webrtc.VideoSource
 import org.webrtc.VideoTrack
-import org.webrtc.audio.AudioDeviceModule
-import org.webrtc.audio.JavaAudioDeviceModule
-import java.util.concurrent.Executors
 
-/**
- * WebRTC media/session foundation. Signaling remains transport-agnostic.
- * A caller supplies SDP/ICE messages to the signaling layer; no media is sent
- * through the signaling server.
- */
+/** WebRTC media/session foundation. Signaling carries SDP/ICE only; media stays peer-to-peer. */
 class WebRtcSession(
     context: Context,
     private val eglBase: EglBase,
@@ -36,15 +30,18 @@ class WebRtcSession(
         fun onError(message: String)
     }
 
-    private val executor = Executors.newSingleThreadExecutor()
     private val factory: PeerConnectionFactory
     private val peerConnection: PeerConnection
     private var cameraCapturer: CameraVideoCapturer? = null
     private var cameraSource: VideoSource? = null
     private var audioSource: AudioSource? = null
+    private var localAudioTrack: AudioTrack? = null
+    private var localVideoTrack: VideoTrack? = null
+    private var receiveTransceiversAdded = false
+    private var closed = false
 
     init {
-        val audioModule: AudioDeviceModule = JavaAudioDeviceModule.builder(context)
+        val audioModule = org.webrtc.audio.JavaAudioDeviceModule.builder(context)
             .setUseHardwareAcousticEchoCanceler(true)
             .setUseHardwareNoiseSuppressor(true)
             .createAudioDeviceModule()
@@ -63,9 +60,7 @@ class WebRtcSession(
         audioModule.release()
 
         val config = PeerConnection.RTCConfiguration(
-            listOf(
-                PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer()
-            )
+            listOf(PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer())
         ).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
@@ -76,11 +71,20 @@ class WebRtcSession(
         }
     }
 
+    /** Controller-side: advertise that this peer wants to receive camera/microphone media. */
+    fun prepareToReceiveRemoteMedia() {
+        if (receiveTransceiversAdded) return
+        peerConnection.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO)
+        peerConnection.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO)
+        receiveTransceiversAdded = true
+    }
+
     fun addLocalMedia(context: Context) {
-        if (cameraSource != null || audioSource != null) return
+        if (cameraSource != null || audioSource != null || closed) return
 
         audioSource = factory.createAudioSource(MediaConstraints())
-        peerConnection.addTrack(factory.createAudioTrack("audio", audioSource))
+        localAudioTrack = factory.createAudioTrack("audio", audioSource)
+        peerConnection.addTrack(localAudioTrack)
 
         val videoSource = factory.createVideoSource(false)
         cameraSource = videoSource
@@ -100,32 +104,34 @@ class WebRtcSession(
         val helper = SurfaceTextureHelper.create("RemoteLinkCamera", eglBase.eglBaseContext)
         capturer.initialize(helper, context, videoSource.capturerObserver)
         capturer.startCapture(1280, 720, 30)
-        peerConnection.addTrack(factory.createVideoTrack("video", videoSource))
+        localVideoTrack = factory.createVideoTrack("video", videoSource)
+        peerConnection.addTrack(localVideoTrack)
     }
 
     fun createOffer() {
+        if (closed) return
         peerConnection.createOffer(object : SimpleSdpObserver() {
             override fun onCreateSuccess(description: SessionDescription) {
                 peerConnection.setLocalDescription(SimpleSdpObserver(), description)
                 listener.onLocalDescription(description)
             }
-
             override fun onCreateFailure(error: String) = listener.onError("Offer failed: $error")
         }, MediaConstraints())
     }
 
     fun createAnswer() {
+        if (closed) return
         peerConnection.createAnswer(object : SimpleSdpObserver() {
             override fun onCreateSuccess(description: SessionDescription) {
                 peerConnection.setLocalDescription(SimpleSdpObserver(), description)
                 listener.onLocalDescription(description)
             }
-
             override fun onCreateFailure(error: String) = listener.onError("Answer failed: $error")
         }, MediaConstraints())
     }
 
     fun setRemoteDescription(type: SessionDescription.Type, sdp: String) {
+        if (closed) return
         peerConnection.setRemoteDescription(
             object : SimpleSdpObserver() {
                 override fun onSetFailure(error: String) = listener.onError("Remote SDP failed: $error")
@@ -135,17 +141,20 @@ class WebRtcSession(
     }
 
     fun addRemoteIceCandidate(sdpMid: String?, sdpMLineIndex: Int, candidate: String) {
-        peerConnection.addIceCandidate(PeerConnection.IceCandidate(sdpMid, sdpMLineIndex, candidate))
+        if (!closed) peerConnection.addIceCandidate(PeerConnection.IceCandidate(sdpMid, sdpMLineIndex, candidate))
     }
 
     fun close() {
+        if (closed) return
+        closed = true
         runCatching { cameraCapturer?.stopCapture() }
         cameraCapturer?.dispose()
         cameraSource?.dispose()
         audioSource?.dispose()
+        localVideoTrack?.dispose()
+        localAudioTrack?.dispose()
         peerConnection.close()
         factory.dispose()
-        executor.shutdownNow()
     }
 
     private val observer = object : PeerConnection.Observer {
