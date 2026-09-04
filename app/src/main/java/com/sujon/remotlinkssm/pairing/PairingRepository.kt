@@ -16,6 +16,12 @@ class PairingRepository(
 ) {
     fun observeTrustedDevices(): Flow<List<TrustedDeviceEntity>> = dao.observeAll()
 
+    fun localIdentity(): DeviceIdentityQr = DeviceIdentityQr(
+        deviceId = localDeviceId(),
+        deviceName = localDeviceName(),
+        publicKey = keyManager.publicKeyBase64()
+    )
+
     fun newSession(): Pair<PairingSession, String> {
         val code = PairingCode.generate()
         val session = PairingSession(
@@ -35,6 +41,19 @@ class PairingRepository(
                 deviceId = session.deviceId,
                 deviceName = session.deviceName,
                 publicKey = session.publicKey,
+                pairedAt = System.currentTimeMillis(),
+                lastConnectedAt = null
+            )
+        )
+    }
+
+    suspend fun trustIdentity(identity: DeviceIdentityQr) {
+        require(identity.deviceId != localDeviceId()) { "Cannot trust this device itself" }
+        dao.upsert(
+            TrustedDeviceEntity(
+                deviceId = identity.deviceId,
+                deviceName = identity.deviceName,
+                publicKey = identity.publicKey,
                 pairedAt = System.currentTimeMillis(),
                 lastConnectedAt = null
             )
