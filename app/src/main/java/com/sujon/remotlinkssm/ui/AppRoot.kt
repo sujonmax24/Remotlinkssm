@@ -39,7 +39,7 @@ import com.sujon.remotlinkssm.signaling.SignalingConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
-private enum class PairingRoute { NONE, CAMERA_LINK, CONTROLLER_LINK, CONTROLLER_IDENTITY_QR }
+private enum class PairingRoute { NONE, CAMERA_LINK, CONTROLLER_IDENTITY_QR }
 
 @Composable
 fun AppRoot(initialPairingUri: Uri? = null) {
@@ -51,7 +51,7 @@ fun AppRoot(initialPairingUri: Uri? = null) {
     val scope = rememberCoroutineScope()
 
     var role by remember(initialPairingUri) { mutableStateOf<DeviceRole?>(if (initialPairingUri != null) DeviceRole.CONTROLLER else null) }
-    var pairingRoute by remember(initialPairingUri) { mutableStateOf(if (initialPairingUri != null) PairingRoute.CONTROLLER_LINK else PairingRoute.NONE) }
+    var pairingRoute by remember(initialPairingUri) { mutableStateOf(PairingRoute.NONE) }
     var permissionMessage by remember { mutableStateOf<String?>(null) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
     var endpoint by remember { mutableStateOf(signalingConfig.endpoint) }
@@ -68,15 +68,14 @@ fun AppRoot(initialPairingUri: Uri? = null) {
     }
 
     when {
-        pairingRoute == PairingRoute.CONTROLLER_LINK && initialPairingUri != null -> ControllerPairingLinkScreen(
+        initialPairingUri != null && role == DeviceRole.CONTROLLER -> ControllerPairingLinkScreen(
             uri = initialPairingUri,
             repository = repository,
-            onBack = { pairingRoute = PairingRoute.NONE; role = null },
+            onBack = { role = null },
             onPaired = { invitation ->
                 signalingConfig.endpoint = invitation.signalingEndpoint
                 endpoint = invitation.signalingEndpoint
-                pairingRoute = PairingRoute.NONE
-                statusMessage = "Camera Device trusted. You can now connect when the Camera user approves the request."
+                statusMessage = "Camera Device trusted. You can connect when the Camera user approves the request."
             }
         )
 
@@ -107,36 +106,27 @@ fun AppRoot(initialPairingUri: Uri? = null) {
 
         role == DeviceRole.CONTROLLER -> {
             Column(Modifier.fillMaxSize()) {
-                SignalingEndpointCard(
-                    endpoint = endpoint,
-                    onEndpointChange = { endpoint = it },
-                    onSave = {
-                        if (endpoint.trim().startsWith("wss://")) {
-                            signalingConfig.endpoint = endpoint.trim()
-                            statusMessage = "Signaling endpoint saved."
-                        } else statusMessage = "Endpoint must start with wss://"
-                    }
-                )
+                SignalingEndpointCard(endpoint, { endpoint = it }) {
+                    if (endpoint.trim().startsWith("wss://")) {
+                        signalingConfig.endpoint = endpoint.trim()
+                        statusMessage = "Signaling endpoint saved."
+                    } else statusMessage = "Endpoint must start with wss://"
+                }
                 TrustedDevicesScreen(
                     devices = trustedDevices,
-                    onPair = { statusMessage = "Open the Camera Device and share its pairing link with this phone." },
+                    onPair = { statusMessage = "Open Camera Device → Create & Share Pairing Link, then tap that link on this phone." },
                     onIdentityQr = { pairingRoute = PairingRoute.CONTROLLER_IDENTITY_QR },
                     onRevoke = { device ->
                         scope.launch(Dispatchers.IO) { repository.revoke(device.deviceId) }
                         statusMessage = "${device.deviceName} revoked."
                     },
                     onConnect = { device ->
-                        scope.launch(Dispatchers.IO { repository.markConnected(device.deviceId) })
-                        statusMessage = if (signalingConfig.endpoint.isBlank()) {
-                            "Set a wss:// signaling endpoint before connecting."
-                        } else "${device.deviceName} is trusted. WebRTC connection UI is next."
+                        scope.launch(Dispatchers.IO) { repository.markConnected(device.deviceId) }
+                        statusMessage = if (signalingConfig.endpoint.isBlank()) "Set a wss:// signaling endpoint before connecting." else "${device.deviceName} is trusted. WebRTC connection UI is next."
                     }
                 )
                 StatusMessage(statusMessage)
-                OutlinedButton(
-                    onClick = { role = null; statusMessage = null },
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)
-                ) { Text("Change Role") }
+                OutlinedButton(onClick = { role = null; statusMessage = null }, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) { Text("Change Role") }
             }
         }
 
@@ -144,29 +134,18 @@ fun AppRoot(initialPairingUri: Uri? = null) {
             Column(Modifier.fillMaxSize().padding(20.dp)) {
                 Text("Camera Device", style = MaterialTheme.typography.headlineMedium)
                 Spacer(Modifier.height(10.dp))
-                Text("Share an expiring link. The Controller opens it with one tap; no 6-digit pairing code or QR scan is required.")
+                Text("Create an expiring invitation link. The Controller opens it with one tap. No 6-digit pairing code is used.")
                 Spacer(Modifier.height(18.dp))
-                SignalingEndpointCard(
-                    endpoint = endpoint,
-                    onEndpointChange = { endpoint = it },
-                    onSave = {
-                        if (endpoint.trim().startsWith("wss://")) {
-                            signalingConfig.endpoint = endpoint.trim()
-                            statusMessage = "Signaling endpoint saved."
-                        } else statusMessage = "Endpoint must start with wss://"
-                    }
-                )
+                SignalingEndpointCard(endpoint, { endpoint = it }) {
+                    if (endpoint.trim().startsWith("wss://")) {
+                        signalingConfig.endpoint = endpoint.trim()
+                        statusMessage = "Signaling endpoint saved."
+                    } else statusMessage = "Endpoint must start with wss://"
+                }
                 Spacer(Modifier.height(8.dp))
-                Button(
-                    onClick = { pairingRoute = PairingRoute.CAMERA_LINK },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = endpoint.startsWith("wss://")
-                ) { Text("Create & Share Pairing Link") }
+                Button(onClick = { pairingRoute = PairingRoute.CAMERA_LINK }, modifier = Modifier.fillMaxWidth(), enabled = endpoint.startsWith("wss://")) { Text("Create & Share Pairing Link") }
                 Spacer(Modifier.height(12.dp))
-                OutlinedButton(
-                    onClick = { pairingRoute = PairingRoute.CONTROLLER_IDENTITY_QR },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("Controller Identity QR (fallback)") }
+                OutlinedButton(onClick = { pairingRoute = PairingRoute.CONTROLLER_IDENTITY_QR }, modifier = Modifier.fillMaxWidth()) { Text("Controller Identity QR (fallback)") }
                 Spacer(Modifier.weight(1f))
                 StatusMessage(statusMessage)
                 OutlinedButton(onClick = { role = null }, modifier = Modifier.fillMaxWidth()) { Text("Change Role") }
