@@ -32,7 +32,7 @@ server.on('connection', (ws) => {
     }
 
     // HELLO registers the socket for routing. The app still authenticates
-    // actual signaling messages with the sender device public key.
+    // actual signaling messages with the device public key.
     if (message.type === 'HELLO') {
       const deviceId = message.senderDeviceId;
       if (typeof deviceId !== 'string' || !deviceId || typeof message.signature !== 'string') {
@@ -43,7 +43,6 @@ server.on('connection', (ws) => {
       if (previous && previous !== ws) previous.close(4001, 'Replaced by newer connection');
       ws.deviceId = deviceId;
       clients.set(deviceId, ws);
-      ws.send(JSON.stringify({ type: 'HELLO_ACK', deviceId }));
       return;
     }
 
