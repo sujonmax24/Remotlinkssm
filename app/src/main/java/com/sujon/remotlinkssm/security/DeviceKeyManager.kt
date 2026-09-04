@@ -5,6 +5,7 @@ import android.security.keystore.KeyProperties
 import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.KeyStore
+import java.security.Signature
 import java.util.Base64
 
 class DeviceKeyManager {
@@ -34,4 +35,11 @@ class DeviceKeyManager {
     }
 
     fun publicKeyBase64(): String = Base64.getEncoder().encodeToString(getOrCreateKeyPair().public.encoded)
+
+    fun sign(data: ByteArray): String {
+        val signature = Signature.getInstance("SHA256withECDSA")
+        signature.initSign(getOrCreateKeyPair().private)
+        signature.update(data)
+        return Base64.getEncoder().encodeToString(signature.sign())
+    }
 }
