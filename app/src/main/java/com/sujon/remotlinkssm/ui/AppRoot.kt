@@ -53,58 +53,25 @@ fun AppRoot(initialPairingUri: Uri? = null) {
         if (results[Manifest.permission.CAMERA] == true && results[Manifest.permission.RECORD_AUDIO] == true) {
             role = DeviceRole.CAMERA
             permissionMessage = null
-        } else {
-            permissionMessage = "Camera ও microphone permission না দিলে Camera mode চালু করা যাবে না।"
-        }
+        } else permissionMessage = "Camera ও microphone permission না দিলে Camera mode চালু করা যাবে না।"
     }
 
-    DisposableEffect(manager) {
-        onDispose { manager?.end() }
-    }
+    DisposableEffect(manager) { onDispose { manager?.end() } }
 
-    fun newManager(
-        roleValue: DeviceRole,
-        device: TrustedDeviceEntity?,
-        token: String?,
-        onRequest: ((String, String, String) -> Unit)? = null
-    ): WebRtcSessionManager = WebRtcSessionManager(
-        context.applicationContext,
-        roleValue,
-        device,
-        eglBase,
-        object : WebRtcSessionManager.Listener {
-            override fun onConnecting() {
-                connectionStatus = if (roleValue == DeviceRole.CAMERA) "Listening…" else "Sending request…"
-            }
-            override fun onConnected() {
-                connectionStatus = if (roleValue == DeviceRole.CAMERA) "Waiting for Controller…" else "Request sent — waiting for Camera approval…"
-            }
-            override fun onIncomingRequest(deviceId: String, deviceName: String, publicKey: String) {
-                onRequest?.invoke(deviceId, deviceName, publicKey)
-            }
+    fun newManager(roleValue: DeviceRole, device: TrustedDeviceEntity?, token: String?, onRequest: ((String, String, String) -> Unit)? = null): WebRtcSessionManager =
+        WebRtcSessionManager(context.applicationContext, roleValue, device, eglBase, object : WebRtcSessionManager.Listener {
+            override fun onConnecting() { connectionStatus = if (roleValue == DeviceRole.CAMERA) "Listening…" else "Sending request…" }
+            override fun onConnected() { connectionStatus = if (roleValue == DeviceRole.CAMERA) "Waiting for Controller…" else "Request sent — waiting for Camera approval…" }
+            override fun onIncomingRequest(deviceId: String, deviceName: String, publicKey: String) { onRequest?.invoke(deviceId, deviceName, publicKey) }
             override fun onApprovalRequired() { connectionStatus = "Camera approval required" }
-            override fun onRemoteVideoTrack(track: VideoTrack) {
-                remoteVideoTrack = track
-                connectionStatus = "Remote video connected"
-            }
-            override fun onConnectionState(state: PeerConnection.PeerConnectionState) {
-                connectionStatus = state.name
-            }
+            override fun onRemoteVideoTrack(track: VideoTrack) { remoteVideoTrack = track; connectionStatus = "Remote video connected" }
+            override fun onConnectionState(state: PeerConnection.PeerConnectionState) { connectionStatus = state.name }
             override fun onError(message: String) { statusMessage = message }
-            override fun onEnded() {
-                connectionStatus = "Connection ended"
-                remoteVideoTrack = null
-                request = null
-            }
-        },
-        endpoint,
-        token
-    )
+            override fun onEnded() { connectionStatus = "Connection ended"; remoteVideoTrack = null; request = null }
+        }, endpoint, token)
 
     when {
-        initialPairingUri != null && role == DeviceRole.CONTROLLER -> ControllerPairingLinkScreen(
-            initialPairingUri,
-            repository,
+        initialPairingUri != null && role == DeviceRole.CONTROLLER -> ControllerPairingLinkScreen(initialPairingUri, repository,
             onBack = { role = null },
             onPaired = { paired ->
                 signalingConfig.endpoint = paired.signalingEndpoint
@@ -116,48 +83,30 @@ fun AppRoot(initialPairingUri: Uri? = null) {
         )
         role == null -> RoleSelectionScreen(
             onController = { role = DeviceRole.CONTROLLER },
-            onCamera = {
-                permissionLauncher.launch(buildList {
-                    add(Manifest.permission.CAMERA)
-                    add(Manifest.permission.RECORD_AUDIO)
-                    if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
-                }.toTypedArray())
-            },
+            onCamera = { permissionLauncher.launch(buildList { add(Manifest.permission.CAMERA); add(Manifest.permission.RECORD_AUDIO); if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS) }.toTypedArray()) },
             permissionMessage = permissionMessage
         )
-        pairingRoute == PairingRoute.CAMERA_LINK -> CameraPairingLinkScreen(
-            repository,
-            endpoint,
+        pairingRoute == PairingRoute.CAMERA_LINK -> CameraPairingLinkScreen(repository, endpoint,
             onBack = { pairingRoute = PairingRoute.NONE },
             onLinkCreated = { created ->
                 invitation = created
                 pairingRoute = PairingRoute.NONE
                 manager?.end()
-                manager = newManager(DeviceRole.CAMERA, null, created.token) { id, name, key ->
-                    request = Triple(id, name, key)
-                    connectionStatus = "Controller request received"
-                }
+                manager = newManager(DeviceRole.CAMERA, null, created.token) { id, name, key -> request = Triple(id, name, key); connectionStatus = "Controller request received" }
                 manager?.connect()
             }
         )
+        pairingRoute == PairingRoute.CONTROLLER_IDENTITY_QR -> ControllerIdentityQrScreen(repository, onBack = { pairingRoute = PairingRoute.NONE })
         request != null && role == DeviceRole.CAMERA -> {
             val current = request!!
-            CameraConnectionRequestScreen(
-                current.second,
-                current.first,
+            CameraConnectionRequestScreen(current.second, current.first,
                 onAccept = {
-                    scope.launch(Dispatchers.IO) {
-                        repository.trustIdentity(DeviceIdentityQr(current.first, current.second, current.third))
-                    }
+                    scope.launch(Dispatchers.IO) { repository.trustIdentity(DeviceIdentityQr(current.first, current.second, current.third)) }
                     manager?.acceptCameraShare()
                     statusMessage = "Accepted — starting secure camera connection…"
                     request = null
                 },
-                onReject = {
-                    manager?.rejectOrEnd()
-                    request = null
-                    statusMessage = "Connection request rejected."
-                },
+                onReject = { manager?.rejectOrEnd(); request = null; statusMessage = "Connection request rejected." },
                 status = connectionStatus
             )
         }
@@ -165,42 +114,28 @@ fun AppRoot(initialPairingUri: Uri? = null) {
             Column(Modifier.fillMaxSize()) {
                 SignalingEndpointCard(endpoint, { endpoint = it }) {
                     val value = endpoint.trim()
-                    if (value.startsWith("wss://")) {
-                        endpoint = value
-                        signalingConfig.endpoint = value
-                        statusMessage = "Signaling endpoint saved."
-                    } else statusMessage = "Endpoint must start with wss://"
+                    if (value.startsWith("wss://")) { endpoint = value; signalingConfig.endpoint = value; statusMessage = "Signaling endpoint saved." }
+                    else statusMessage = "Endpoint must start with wss://"
                 }
-                if (remoteVideoTrack != null) {
-                    RemoteVideoView(remoteVideoTrack!!, eglBase, Modifier.fillMaxWidth().height(260.dp))
-                }
+                if (remoteVideoTrack != null) RemoteVideoView(remoteVideoTrack!!, eglBase, Modifier.fillMaxWidth().height(260.dp))
                 TrustedDevicesScreen(
                     devices = trustedDevices,
                     onPair = { statusMessage = "Open the Camera invitation link, trust it, then press Connect." },
                     onIdentityQr = { pairingRoute = PairingRoute.CONTROLLER_IDENTITY_QR },
-                    onRevoke = { device ->
-                        scope.launch(Dispatchers.IO) { repository.revoke(device.deviceId) }
-                        statusMessage = "${device.deviceName} revoked."
-                    },
+                    onRevoke = { device -> scope.launch(Dispatchers.IO) { repository.revoke(device.deviceId) }; statusMessage = "${device.deviceName} revoked." },
                     onConnect = { device ->
                         val value = endpoint.trim()
-                        if (!value.startsWith("wss://")) {
-                            statusMessage = "Set a wss:// signaling endpoint first."
-                        } else {
-                            endpoint = value
-                            signalingConfig.endpoint = value
-                            manager?.end()
-                            remoteVideoTrack = null
+                        if (!value.startsWith("wss://")) statusMessage = "Set a wss:// signaling endpoint first."
+                        else {
+                            endpoint = value; signalingConfig.endpoint = value
+                            manager?.end(); remoteVideoTrack = null
                             manager = newManager(DeviceRole.CONTROLLER, device, invitation?.token)
                             manager?.connect()
                         }
                     }
                 )
                 StatusMessage("$connectionStatus${statusMessage?.let { " — $it" } ?: ""}")
-                OutlinedButton(
-                    onClick = { manager?.end(); manager = null; role = null; statusMessage = null },
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)
-                ) { Text("Change Role") }
+                OutlinedButton(onClick = { manager?.end(); manager = null; role = null; statusMessage = null }, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) { Text("Change Role") }
             }
         }
         else -> {
@@ -211,33 +146,16 @@ fun AppRoot(initialPairingUri: Uri? = null) {
                 Spacer(Modifier.height(18.dp))
                 SignalingEndpointCard(endpoint, { endpoint = it }) {
                     val value = endpoint.trim()
-                    if (value.startsWith("wss://")) {
-                        endpoint = value
-                        signalingConfig.endpoint = value
-                        statusMessage = "Signaling endpoint saved."
-                    } else statusMessage = "Endpoint must start with wss://"
+                    if (value.startsWith("wss://")) { endpoint = value; signalingConfig.endpoint = value; statusMessage = "Signaling endpoint saved." }
+                    else statusMessage = "Endpoint must start with wss://"
                 }
                 Spacer(Modifier.height(8.dp))
-                Button(
-                    onClick = { pairingRoute = PairingRoute.CAMERA_LINK },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = endpoint.startsWith("wss://")
-                ) { Text("Create & Share Pairing Link") }
-                if (invitation != null) {
-                    Spacer(Modifier.height(12.dp))
-                    Text("Invitation active — $connectionStatus")
-                }
+                Button(onClick = { pairingRoute = PairingRoute.CAMERA_LINK }, modifier = Modifier.fillMaxWidth(), enabled = endpoint.startsWith("wss://")) { Text("Create & Share Pairing Link") }
+                if (invitation != null) { Spacer(Modifier.height(12.dp)); Text("Invitation active — $connectionStatus") }
                 Spacer(Modifier.height(12.dp))
-                OutlinedButton(
-                    onClick = { pairingRoute = PairingRoute.CONTROLLER_IDENTITY_QR },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("Controller Identity QR (fallback)") }
-                Spacer(Modifier.weight(1f))
-                StatusMessage(statusMessage)
-                OutlinedButton(
-                    onClick = { manager?.end(); manager = null; invitation = null; role = null },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("Change Role") }
+                OutlinedButton(onClick = { pairingRoute = PairingRoute.CONTROLLER_IDENTITY_QR }, modifier = Modifier.fillMaxWidth()) { Text("Controller Identity QR (fallback)") }
+                Spacer(Modifier.weight(1f)); StatusMessage(statusMessage)
+                OutlinedButton(onClick = { manager?.end(); manager = null; invitation = null; role = null }, modifier = Modifier.fillMaxWidth()) { Text("Change Role") }
             }
         }
     }
@@ -245,72 +163,37 @@ fun AppRoot(initialPairingUri: Uri? = null) {
 
 @Composable
 private fun RemoteVideoView(track: VideoTrack, eglBase: EglBase, modifier: Modifier = Modifier) {
-    AndroidView(
-        modifier = modifier,
-        factory = { context ->
-            SurfaceViewRenderer(context).apply {
-                init(eglBase.eglBaseContext, null)
-                setEnableHardwareScaler(true)
-                setMirror(false)
-                track.addSink(this)
-            }
-        },
-        update = { view -> track.addSink(view) },
-        onRelease = { view ->
-            track.removeSink(view)
-            view.release()
-        }
-    )
+    AndroidView(modifier = modifier, factory = { context ->
+        SurfaceViewRenderer(context).apply { init(eglBase.eglBaseContext, null); setEnableHardwareScaler(true); setMirror(false); track.addSink(this) }
+    }, update = { view -> track.addSink(view) }, onRelease = { view -> track.removeSink(view); view.release() })
 }
 
 @Composable
 private fun SignalingEndpointCard(endpoint: String, onEndpointChange: (String) -> Unit, onSave: () -> Unit) {
-    Card(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) {
-        Column(Modifier.padding(16.dp)) {
-            Text("Signaling server", style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(6.dp))
-            Text("Only connection setup messages use this server. Camera/video/audio stay peer-to-peer.")
-            Spacer(Modifier.height(10.dp))
-            OutlinedTextField(endpoint, onEndpointChange, label = { Text("wss://…") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            Spacer(Modifier.height(8.dp))
-            Button(onClick = onSave, modifier = Modifier.fillMaxWidth()) { Text("Save endpoint") }
-        }
-    }
+    Card(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) { Column(Modifier.padding(16.dp)) {
+        Text("Signaling server", style = MaterialTheme.typography.titleMedium); Spacer(Modifier.height(6.dp))
+        Text("Only connection setup messages use this server. Camera/video/audio stay peer-to-peer.")
+        Spacer(Modifier.height(10.dp)); OutlinedTextField(endpoint, onEndpointChange, label = { Text("wss://…") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        Spacer(Modifier.height(8.dp)); Button(onClick = onSave, modifier = Modifier.fillMaxWidth()) { Text("Save endpoint") }
+    }}
 }
 
-@Composable private fun StatusMessage(message: String?) {
-    message?.let { Text(it, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) }
-}
+@Composable private fun StatusMessage(message: String?) { message?.let { Text(it, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) } }
 
 @Composable
 private fun RoleSelectionScreen(onController: () -> Unit, onCamera: () -> Unit, permissionMessage: String?) {
     Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center) {
-        Text("RemoteLink", style = MaterialTheme.typography.headlineLarge)
-        Spacer(Modifier.height(8.dp))
-        Text("Connect a trusted Controller to a Camera Device with explicit user approval.")
-        Spacer(Modifier.height(28.dp))
-        Card(Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(20.dp)) {
-                Text("Controller", style = MaterialTheme.typography.titleLarge)
-                Spacer(Modifier.height(6.dp))
-                Text("Open a RemoteLink invitation and send a connection request.")
-                Spacer(Modifier.height(14.dp))
-                Button(onClick = onController, modifier = Modifier.fillMaxWidth()) { Text("Use as Controller") }
-            }
-        }
+        Text("RemoteLink", style = MaterialTheme.typography.headlineLarge); Spacer(Modifier.height(8.dp))
+        Text("Connect a trusted Controller to a Camera Device with explicit user approval."); Spacer(Modifier.height(28.dp))
+        Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(20.dp)) {
+            Text("Controller", style = MaterialTheme.typography.titleLarge); Spacer(Modifier.height(6.dp)); Text("Open a RemoteLink invitation and send a connection request.")
+            Spacer(Modifier.height(14.dp)); Button(onClick = onController, modifier = Modifier.fillMaxWidth()) { Text("Use as Controller") }
+        }}
         Spacer(Modifier.height(16.dp))
-        Card(Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(20.dp)) {
-                Text("Camera Device", style = MaterialTheme.typography.titleLarge)
-                Spacer(Modifier.height(6.dp))
-                Text("Create an expiring link and explicitly accept each connection request.")
-                Spacer(Modifier.height(14.dp))
-                OutlinedButton(onClick = onCamera, modifier = Modifier.fillMaxWidth()) { Text("Use as Camera Device") }
-            }
-        }
-        permissionMessage?.let {
-            Spacer(Modifier.height(16.dp))
-            Text(it, color = MaterialTheme.colorScheme.error)
-        }
+        Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(20.dp)) {
+            Text("Camera Device", style = MaterialTheme.typography.titleLarge); Spacer(Modifier.height(6.dp)); Text("Create an expiring link and explicitly accept each connection request.")
+            Spacer(Modifier.height(14.dp)); OutlinedButton(onClick = onCamera, modifier = Modifier.fillMaxWidth()) { Text("Use as Camera Device") }
+        }}
+        permissionMessage?.let { Spacer(Modifier.height(16.dp)); Text(it, color = MaterialTheme.colorScheme.error) }
     }
 }
