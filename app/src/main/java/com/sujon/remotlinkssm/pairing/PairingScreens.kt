@@ -68,9 +68,7 @@ fun CameraPairingScreen(repository: PairingRepository, onBack: () -> Unit) {
         Spacer(Modifier.height(8.dp))
         Text("On the Controller phone, scan this QR and enter the 6-digit code shown below.")
         Spacer(Modifier.height(18.dp))
-        qrBitmap?.let {
-            Image(it.asImageBitmap(), "RemoteLink pairing QR", Modifier.size(280.dp))
-        }
+        qrBitmap?.let { Image(it.asImageBitmap(), "RemoteLink pairing QR", Modifier.size(280.dp)) }
         Spacer(Modifier.height(18.dp))
         Text("Pairing code", style = MaterialTheme.typography.labelLarge)
         Text(code, style = MaterialTheme.typography.displaySmall)
@@ -114,7 +112,6 @@ fun ControllerPairingScreen(
         Spacer(Modifier.height(10.dp))
         Text("Verify the device name and enter the 6-digit code shown on the Camera Device.")
         Spacer(Modifier.height(20.dp))
-
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(18.dp)) {
                 Text(scannedSession?.deviceName ?: "Unknown device", style = MaterialTheme.typography.titleLarge)
@@ -163,11 +160,87 @@ fun ControllerPairingScreen(
 }
 
 @Composable
+fun ControllerIdentityQrScreen(repository: PairingRepository, onBack: () -> Unit) {
+    val identity = remember { repository.localIdentity() }
+    val bitmap = remember(identity) { QrCodeGenerator.createBitmap(identity.toPayload()) }
+    Column(
+        Modifier.fillMaxSize().padding(20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text("Add this Controller to the Camera", style = MaterialTheme.typography.headlineSmall)
+        Spacer(Modifier.height(10.dp))
+        Text("On the Camera Device, choose “Scan Controller QR”. Only the public device identity is shared.")
+        Spacer(Modifier.height(18.dp))
+        Image(bitmap.asImageBitmap(), "Controller identity QR", Modifier.size(280.dp))
+        Spacer(Modifier.height(16.dp))
+        Text(identity.deviceName, style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.weight(1f))
+        OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("Done") }
+    }
+}
+
+@Composable
+fun CameraControllerIdentityScanScreen(
+    repository: PairingRepository,
+    onBack: () -> Unit,
+    onTrusted: () -> Unit
+) {
+    var scanned by remember { mutableStateOf<DeviceIdentityQr?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    if (scanned == null) {
+        QrScannerScreen(
+            onResult = { raw ->
+                try {
+                    scanned = DeviceIdentityQr.fromPayload(raw)
+                    error = null
+                } catch (e: Exception) {
+                    error = e.message ?: "Invalid identity QR"
+                }
+            },
+            onBack = onBack
+        )
+        return
+    }
+
+    Column(Modifier.fillMaxSize().padding(20.dp)) {
+        Text("Confirm Controller", style = MaterialTheme.typography.headlineSmall)
+        Spacer(Modifier.height(12.dp))
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(18.dp)) {
+                Text(scanned!!.deviceName, style = MaterialTheme.typography.titleLarge)
+                Spacer(Modifier.height(6.dp))
+                Text("Device ID: ${scanned!!.deviceId}")
+            }
+        }
+        error?.let {
+            Spacer(Modifier.height(8.dp))
+            Text(it, color = MaterialTheme.colorScheme.error)
+        }
+        Spacer(Modifier.height(18.dp))
+        Button(
+            onClick = {
+                scope.launch {
+                    runCatching { repository.trustIdentity(scanned!!) }
+                        .onSuccess { onTrusted() }
+                        .onFailure { error = it.message ?: "Unable to trust Controller" }
+                }
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) { Text("Trust Controller") }
+        Spacer(Modifier.height(10.dp))
+        OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("Cancel") }
+    }
+}
+
+@Composable
 fun TrustedDevicesScreen(
     devices: List<TrustedDeviceEntity>,
     onRevoke: (TrustedDeviceEntity) -> Unit,
     onConnect: (TrustedDeviceEntity) -> Unit,
-    onPair: () -> Unit
+    onPair: () -> Unit,
+    onIdentityQr: (() -> Unit)? = null
 ) {
     Column(Modifier.fillMaxSize().padding(20.dp)) {
         Row(
@@ -176,7 +249,10 @@ fun TrustedDevicesScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("Trusted devices", style = MaterialTheme.typography.headlineSmall)
-            Button(onClick = onPair) { Text("Pair") }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                onIdentityQr?.let { OutlinedButton(onClick = it) { Text("My QR") } }
+                Button(onClick = onPair) { Text("Pair") }
+            }
         }
         Spacer(Modifier.height(12.dp))
         if (devices.isEmpty()) {
